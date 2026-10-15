@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=GPU Screen Recorder
+Comment=Record your screen using gpu-screen-recorder
+Exec=gpu-screen-recorder-gpui
+Icon=com.dec05eba.gpu_screen_recorder
+Categories=AudioVideo;Recorder;
+Terminal=false
+StartupNotify=true
