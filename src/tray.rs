@@ -58,7 +58,7 @@ impl GsrTray {
 
 impl Tray for GsrTray {
     fn id(&self) -> String {
-        "com.dec05eba.gpu_screen_recorder".to_owned()
+        "com.coobyk.gpu_screen_recorder".to_owned()
     }
 
     fn title(&self) -> String {
@@ -74,7 +74,7 @@ impl Tray for GsrTray {
         } else {
             "tray-idle"
         };
-        format!("com.dec05eba.gpu_screen_recorder.{status}")
+        format!("com.coobyk.gpu_screen_recorder.{status}")
     }
 
     fn tool_tip(&self) -> ToolTip {

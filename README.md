@@ -60,10 +60,14 @@ cargo build --release
 
 ```sh
 sudo install -Dm755 target/release/gpu-screen-recorder-gpui /usr/local/bin/gpu-screen-recorder-gpui
-sudo install -Dm644 com.dec05eba.gpu_screen_recorder_gpui.desktop /usr/share/applications/
-sudo install -Dm644 icons/hicolor/scalable/apps/com.dec05eba.gpu_screen_recorder.svg \
+sudo install -Dm644 com.coobyk.gpu_screen_recorder.desktop /usr/share/applications/
+sudo install -Dm644 icons/hicolor/scalable/apps/com.coobyk.gpu_screen_recorder.svg \
   /usr/share/icons/hicolor/scalable/apps/
 ```
+
+The application id is `com.coobyk.gpu_screen_recorder` — the reverse-DNS form of
+the `coobyk.com` domain — and it is the same string as the `.desktop` file
+name, which is what the compositor and the portal expect.
 
 ## Configuration
 
@@ -89,8 +93,7 @@ compositor's shortcut settings — the app asks the portal to bind them.
 The portal derives the application id from the process it is called by, which
 it resolves to an installed `.desktop` file. Running the binary straight out
 of `target/` therefore fails with `An app id is required`; install the app
-(and `com.dec05eba.gpu_screen_recorder_gpui.desktop`) for the hotkeys to
-register.
+(and `com.coobyk.gpu_screen_recorder.desktop`) for the hotkeys to register.
 
 ## System tray
 
@@ -137,4 +140,17 @@ rules, and the configuration keys (including
 
 ## License
 
-GPL-3.0-or-later. See [LICENSE](LICENSE).
+GPL-3.0. See [LICENSE](LICENSE).
+
+The Qt and GTK frontends this derives from are GPL-3.0, so the whole work
+stays under that license (no "or later" is granted upstream, and a
+derivative cannot add one). This is a modified version: the Rust/GPUI
+rewrite and every behavioural change are listed above under "Deviations
+from the Qt frontend".
+
+For the same reason the application id, `.desktop` file and icon names live
+in this project's own `com.coobyk.*` namespace rather than the upstream
+author's — the GPL grants no rights to the upstream name. References to the
+upstream projects (`git.dec05eba.com`) remain as attribution, and the
+Flatpak app id in the "failed to run" hint is the *backend's*, not this
+app's.

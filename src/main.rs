@@ -30,8 +30,10 @@ use crate::events::{EventChannel, ShortcutId};
 use crate::gsr::{DisplayServer, GpuVendor, GsrInfo, GsrInfoExitStatus};
 use crate::tray::TrayState;
 
-/// Same application id as the Qt frontend's `setDesktopFileName`.
-const APP_ID: &str = "com.dec05eba.gpu_screen_recorder";
+/// Application id (reverse-DNS of coobyk.com), used as the Wayland app id and
+/// to match the installed `.desktop` file. The Qt frontend used the upstream
+/// author's namespace; this rewrite lives under its own.
+const APP_ID: &str = "com.coobyk.gpu_screen_recorder";
 
 /// Set by the termination signals and drained by the UI pump, which then runs
 /// the same graceful shutdown as the tray's "Exit".
@@ -228,6 +230,8 @@ fn validate_startup(
         GsrInfoExitStatus::Ok => {}
         GsrInfoExitStatus::FailedToRunCommand => {
             let command = if flatpak {
+                // `com.dec05eba.gpu_screen_recorder` here is the *backend's*
+                // Flatpak app id on Flathub, not this app's id: leave it alone.
                 "flatpak run --command=gpu-screen-recorder \
                  com.dec05eba.gpu_screen_recorder -w screen -f 60 -o video.mp4"
             } else {
