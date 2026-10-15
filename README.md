@@ -86,6 +86,12 @@ Wayland**. On other Wayland compositors the app prints a warning and runs
 without hotkeys. The hotkeys can be rebound by the user through the
 compositor's shortcut settings — the app asks the portal to bind them.
 
+The portal derives the application id from the process it is called by, which
+it resolves to an installed `.desktop` file. Running the binary straight out
+of `target/` therefore fails with `An app id is required`; install the app
+(and `com.dec05eba.gpu_screen_recorder_gpui.desktop`) for the hotkeys to
+register.
+
 ## System tray
 
 The tray icon is a StatusNotifierItem. Its menu mirrors the Qt frontend:
@@ -113,6 +119,16 @@ points are deliberately different:
 - **Hide to tray.** The Qt frontend hid the window. This version minimizes
   the window (`Window::minimize_window`), which is the closest GPUI
   equivalent on Linux; the window is restored with `activate_window`.
+- **Closing the window without a tray.** Hiding to tray is only useful when
+  a StatusNotifierItem host is actually running, so the app checks for one
+  (`org.kde.StatusNotifierWatcher`). If none is present — a bare session, or
+  `cargo run` from a terminal — closing the window quits instead of hiding,
+  so the process can never be left running with no way to reach it.
+- **Termination signals.** `SIGINT`/`SIGTERM`/`SIGHUP` (Ctrl+C, `kill`, a
+  closing terminal) trigger the same orderly shutdown as the tray's "Exit":
+  the recorder is stopped so the file is finalized, the config is written,
+  and then the app quits. The Qt frontend had no handler, so these killed it
+  abruptly.
 
 Everything else — the page set, the argument builder, the exit-code
 handling, the notification texts, the audio merge/split and inversion

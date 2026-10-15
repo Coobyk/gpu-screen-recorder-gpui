@@ -184,6 +184,30 @@ impl Tray for GsrTray {
     }
 }
 
+/// True when a StatusNotifierItem host is present on the session bus.
+///
+/// `spawn` below is given `assume_sni_available(true)` so it keeps serving even
+/// without a host, which also means its return value cannot be used to tell
+/// whether an icon will actually appear. The window uses this check to decide
+/// whether "hide to tray" (the Qt frontend's `closeEvent`) would leave the user
+/// a way back, or whether closing should simply quit.
+pub fn host_available() -> bool {
+    let Ok(connection) = zbus::blocking::Connection::session() else {
+        return false;
+    };
+    connection
+        .call_method(
+            Some("org.freedesktop.DBus"),
+            "/org/freedesktop/DBus",
+            Some("org.freedesktop.DBus"),
+            "NameHasOwner",
+            &("org.kde.StatusNotifierWatcher",),
+        )
+        .ok()
+        .and_then(|reply| reply.body().deserialize::<bool>().ok())
+        .unwrap_or(false)
+}
+
 /// Starts the tray service on its own thread. Returns the handle used by the UI
 /// thread to refresh the menu; a missing StatusNotifierWatcher is not fatal.
 pub fn spawn(

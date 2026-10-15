@@ -703,7 +703,7 @@ impl GsrApp {
     /// Stops any running recorder, writes the config out and quits. This is the
     /// Qt frontend's `~MainWindow`, which sent SIGINT so the recorder could
     /// finalize the file before the process went away.
-    fn shutdown(&mut self, cx: &mut Context<Self>) {
+    pub fn shutdown(&mut self, cx: &mut Context<Self>) {
         if let Some(recorder) = self.recorder.as_mut() {
             recorder.stop();
         }

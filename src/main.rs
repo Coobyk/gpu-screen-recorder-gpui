@@ -16,6 +16,7 @@ mod theme;
 mod tray;
 mod widgets;
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -31,6 +32,29 @@ use crate::tray::TrayState;
 
 /// Same application id as the Qt frontend's `setDesktopFileName`.
 const APP_ID: &str = "com.dec05eba.gpu_screen_recorder";
+
+/// Set by the termination signals and drained by the UI pump, which then runs
+/// the same graceful shutdown as the tray's "Exit".
+static TERMINATE_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn request_termination(_signal: libc::c_int) {
+    // Only async-signal-safe work: flipping an atomic.
+    TERMINATE_REQUESTED.store(true, Ordering::SeqCst);
+}
+
+/// Turns Ctrl+C and `kill` into an orderly shutdown instead of an abrupt exit,
+/// so a running recording is finalized and the config is written out.
+///
+/// Installed only once the main window exists: the startup-error window has no
+/// pump to drain the flag, so it keeps the default (terminating) disposition.
+fn install_termination_handler() {
+    let handler = request_termination as *const () as libc::sighandler_t;
+    unsafe {
+        libc::signal(libc::SIGINT, handler);
+        libc::signal(libc::SIGTERM, handler);
+        libc::signal(libc::SIGHUP, handler);
+    }
+}
 
 /// Keeps the portal session alive for the process' lifetime.
 ///
@@ -71,9 +95,13 @@ fn main() {
     let startup_error = validate_startup(&gsr_info, gsr_status, flatpak);
 
     gpui_platform::application().run(move |cx: &mut App| {
-        // Closing the window only hides it, so the application must end
-        // explicitly (the tray's "Exit" item, or the error dialog).
-        cx.set_quit_mode(QuitMode::Explicit);
+        // The window close is hidden-to-tray rather than a quit, so the app
+        // must be able to end explicitly (the tray's "Exit" item, the
+        // termination signals, or the error dialog). `LastWindowClosed` is the
+        // safety net: if a close ever gets through without the hide handler
+        // running (the callback is not reliable on every backend), the process
+        // exits instead of lingering with no window and no way to reach it.
+        cx.set_quit_mode(QuitMode::LastWindowClosed);
 
         // Backspace, arrows, clipboard and select-all inside the text fields.
         text_input::bind_keys(cx);
@@ -83,8 +111,13 @@ fn main() {
             return;
         }
 
+        install_termination_handler();
+
         let events = EventChannel::new();
         let tray_state = Arc::new(Mutex::new(TrayState::default()));
+        // Whether an icon can actually be shown decides if closing the window
+        // hides (recoverable through the tray) or quits.
+        let tray_available = tray::host_available();
         let tray_handle = tray::spawn(tray_state.clone(), events.sender.clone());
         let notifier = notify::spawn();
 
@@ -122,12 +155,24 @@ fn main() {
                     ..Default::default()
                 },
                 |window, cx| {
-                    // The "X" hides to tray, exactly like the Qt frontend's
-                    // `closeEvent`.
                     let close_app = app.clone();
                     window.on_window_should_close(cx, move |window, cx| {
-                        window.minimize_window();
-                        close_app.update(cx, |app, cx| app.on_window_hidden(cx));
+                        if tray_available {
+                            // The "X" hides to tray, exactly like the Qt
+                            // frontend's `closeEvent`.
+                            window.minimize_window();
+                            close_app.update(cx, |app, cx| app.on_window_hidden(cx));
+                        } else {
+                            // No tray host: hiding would strand the process
+                            // with no way to bring it back, so quit instead.
+                            //
+                            // Deferred to the pump rather than running the
+                            // shutdown here: `cx.quit()` does not take effect
+                            // when called from inside the platform's close
+                            // callback, and the window must survive until the
+                            // pump (which is bound to it) has run.
+                            TERMINATE_REQUESTED.store(true, Ordering::SeqCst);
+                        }
                         false
                     });
 
@@ -148,7 +193,11 @@ fn main() {
                                     let Some(app) = pump_app.upgrade() else {
                                         return false;
                                     };
-                                    app.update(cx, |app, cx| app.pump(window, cx));
+                                    if TERMINATE_REQUESTED.swap(false, Ordering::SeqCst) {
+                                        app.update(cx, |app, cx| app.shutdown(cx));
+                                    } else {
+                                        app.update(cx, |app, cx| app.pump(window, cx));
+                                    }
                                     true
                                 }) else {
                                     break;
