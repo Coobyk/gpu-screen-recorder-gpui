@@ -26,6 +26,16 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Check the tag matches the crate version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          VERSION="$(sed -n 's/^version *= *"\(.*\)"/\1/p' Cargo.toml | head -n1)"
+          if [ "${GITHUB_REF_NAME}" != "v${VERSION}" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match Cargo.toml (v${VERSION})"
+            exit 1
+          fi
+
       - name: Install build dependencies
         run: |
           sudo apt-get update
