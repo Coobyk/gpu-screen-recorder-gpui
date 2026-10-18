@@ -61,9 +61,13 @@ cargo build --release
 ```sh
 sudo install -Dm755 target/release/gpu-screen-recorder-gpui /usr/local/bin/gpu-screen-recorder-gpui
 sudo install -Dm644 com.coobyk.gpu_screen_recorder.desktop /usr/share/applications/
-sudo install -Dm644 icons/hicolor/scalable/apps/com.coobyk.gpu_screen_recorder.svg \
-  /usr/share/icons/hicolor/scalable/apps/
+sudo install -d /usr/share/icons/hicolor/scalable/apps
+sudo install -m644 icons/hicolor/scalable/apps/*.svg /usr/share/icons/hicolor/scalable/apps/
 ```
+
+That icon directory holds the application icon plus the three tray variants
+(`….tray-idle`, `….tray-recording`, `….tray-paused`) that the tray looks up by
+name.
 
 The application id is `com.coobyk.gpu_screen_recorder` — the reverse-DNS form of
 the `coobyk.com` domain — and it is the same string as the `.desktop` file

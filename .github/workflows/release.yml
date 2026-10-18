@@ -17,7 +17,6 @@ env:
   CARGO_TERM_COLOR: always
   BIN: gpu-screen-recorder-gpui
   DESKTOP: com.coobyk.gpu_screen_recorder.desktop
-  ICON: com.coobyk.gpu_screen_recorder.svg
 
 jobs:
   linux:
@@ -66,11 +65,11 @@ jobs:
           # --- portable tarball -------------------------------------------------
           STAGE="${BIN}-${VERSION}-x86_64-linux"
           rm -rf "$STAGE"
-          mkdir -p "$STAGE/icons/hicolor/scalable/apps"
           install -Dm755 "target/release/$BIN" "$STAGE/$BIN"
           install -Dm644 "$DESKTOP" "$STAGE/$DESKTOP"
-          install -Dm644 "icons/hicolor/scalable/apps/$ICON" \
-            "$STAGE/icons/hicolor/scalable/apps/$ICON"
+          # All icons, not just the app one: the tray looks up
+          # `...tray-idle`/`-recording`/`-paused` by name.
+          cp -a icons "$STAGE/"
           install -Dm644 LICENSE README.md "$STAGE/"
 
           cat > "$STAGE/install.sh" <<'SH'
@@ -83,8 +82,10 @@ jobs:
             "$prefix/bin/gpu-screen-recorder-gpui"
           install -Dm644 "$here/com.coobyk.gpu_screen_recorder.desktop" \
             "$prefix/share/applications/com.coobyk.gpu_screen_recorder.desktop"
-          install -Dm644 "$here/icons/hicolor/scalable/apps/com.coobyk.gpu_screen_recorder.svg" \
-            "$prefix/share/icons/hicolor/scalable/apps/com.coobyk.gpu_screen_recorder.svg"
+          for f in "$here"/icons/hicolor/scalable/apps/*.svg; do
+            install -Dm644 "$f" \
+              "$prefix/share/icons/hicolor/scalable/apps/$(basename "$f")"
+          done
           echo "Installed to $prefix."
           echo "The 'gpu-screen-recorder' backend must be installed separately."
           SH
@@ -102,8 +103,10 @@ jobs:
             "$DEB/usr/share/doc/$BIN"
           install -Dm755 "target/release/$BIN" "$DEB/usr/bin/$BIN"
           install -Dm644 "$DESKTOP" "$DEB/usr/share/applications/$DESKTOP"
-          install -Dm644 "icons/hicolor/scalable/apps/$ICON" \
-            "$DEB/usr/share/icons/hicolor/scalable/apps/$ICON"
+          for f in icons/hicolor/scalable/apps/*.svg; do
+            install -Dm644 "$f" \
+              "$DEB/usr/share/icons/hicolor/scalable/apps/$(basename "$f")"
+          done
           install -Dm644 LICENSE "$DEB/usr/share/doc/$BIN/copyright"
 
           # `readlink -f` first: on merged-/usr systems dpkg records the
