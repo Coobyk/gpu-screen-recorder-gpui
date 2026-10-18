@@ -69,6 +69,20 @@ The application id is `com.coobyk.gpu_screen_recorder` — the reverse-DNS form 
 the `coobyk.com` domain — and it is the same string as the `.desktop` file
 name, which is what the compositor and the portal expect.
 
+## Releases
+
+Pushing a `v*` tag runs `.github/workflows/release.yml`, which builds on
+`ubuntu-24.04` and publishes:
+
+- `gpu-screen-recorder-gpui-<version>-x86_64-linux.tar.gz` — the binary with
+  the `.desktop` and icon files; run `./install.sh` (honours `PREFIX`).
+- `gpu-screen-recorder-gpui_<version>_amd64.deb` — `sudo apt install ./<file>.deb`.
+- `SHA256SUMS` — checksums.
+
+The `gpu-screen-recorder` backend is **not** bundled; install it separately.
+The packages depend on the EGL/Vulkan/Wayland libraries the UI needs, but a
+working GPU driver (Mesa or the NVIDIA driver) must already be installed.
+
 ## Configuration
 
 The configuration lives in the same place as the other frontends:

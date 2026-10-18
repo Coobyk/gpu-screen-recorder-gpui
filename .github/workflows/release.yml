@@ -1,0 +1,182 @@
+name: Release
+
+# Builds on every push/PR (so the build stays green), and publishes a GitHub
+# Release when a `v*` tag is pushed or the workflow is run by hand.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  BIN: gpu-screen-recorder-gpui
+  DESKTOP: com.coobyk.gpu_screen_recorder.desktop
+  ICON: com.coobyk.gpu_screen_recorder.svg
+
+jobs:
+  linux:
+    name: Linux x86_64
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libssl-dev \
+            libfontconfig-dev libfreetype-dev \
+            libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libx11-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev \
+            libxcb-xfixes0-dev libvulkan-dev libegl1 libgl1-mesa-dri
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Package
+        id: pkg
+        run: |
+          set -euo pipefail
+          VERSION="$(sed -n 's/^version *= *"\(.*\)"/\1/p' Cargo.toml | head -n1)"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          # --- portable tarball -------------------------------------------------
+          STAGE="${BIN}-${VERSION}-x86_64-linux"
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE/icons/hicolor/scalable/apps"
+          install -Dm755 "target/release/$BIN" "$STAGE/$BIN"
+          install -Dm644 "$DESKTOP" "$STAGE/$DESKTOP"
+          install -Dm644 "icons/hicolor/scalable/apps/$ICON" \
+            "$STAGE/icons/hicolor/scalable/apps/$ICON"
+          install -Dm644 LICENSE README.md "$STAGE/"
+
+          cat > "$STAGE/install.sh" <<'SH'
+          #!/bin/sh
+          # Install into $PREFIX (default /usr/local).
+          set -eu
+          here=$(cd "$(dirname "$0")" && pwd)
+          prefix=${PREFIX:-/usr/local}
+          install -Dm755 "$here/gpu-screen-recorder-gpui" \
+            "$prefix/bin/gpu-screen-recorder-gpui"
+          install -Dm644 "$here/com.coobyk.gpu_screen_recorder.desktop" \
+            "$prefix/share/applications/com.coobyk.gpu_screen_recorder.desktop"
+          install -Dm644 "$here/icons/hicolor/scalable/apps/com.coobyk.gpu_screen_recorder.svg" \
+            "$prefix/share/icons/hicolor/scalable/apps/com.coobyk.gpu_screen_recorder.svg"
+          echo "Installed to $prefix."
+          echo "The 'gpu-screen-recorder' backend must be installed separately."
+          SH
+          chmod +x "$STAGE/install.sh"
+          tar czf "$STAGE.tar.gz" "$STAGE"
+
+          # --- .deb -------------------------------------------------------------
+          # Runtime deps are derived from the binary's linkage rather than
+          # hard-coded, so they track what the linker actually pulled in.
+          DEB="deb"
+          rm -rf "$DEB"
+          mkdir -p "$DEB/DEBIAN" "$DEB/usr/bin" \
+            "$DEB/usr/share/applications" \
+            "$DEB/usr/share/icons/hicolor/scalable/apps" \
+            "$DEB/usr/share/doc/$BIN"
+          install -Dm755 "target/release/$BIN" "$DEB/usr/bin/$BIN"
+          install -Dm644 "$DESKTOP" "$DEB/usr/share/applications/$DESKTOP"
+          install -Dm644 "icons/hicolor/scalable/apps/$ICON" \
+            "$DEB/usr/share/icons/hicolor/scalable/apps/$ICON"
+          install -Dm644 LICENSE "$DEB/usr/share/doc/$BIN/copyright"
+
+          # `readlink -f` first: on merged-/usr systems dpkg records the
+          # realpath (/usr/lib/...) and reports "no path found" for /lib/...
+          LINK_DEPENDS="$(
+            ldd "target/release/$BIN" 2>/dev/null \
+              | awk '/=> \// {print $3}' \
+              | xargs -r readlink -f \
+              | xargs -r dpkg -S 2>/dev/null \
+              | cut -d: -f1 | sort -u | grep -v '^$' | paste -sd, - || true
+          )"
+          # GPUI additionally `dlopen`s these at startup, so the linker never
+          # records them; without them the app exits at launch.
+          DLOPEN_DEPENDS="libegl1 libvulkan1 libwayland-client0 libwayland-egl1"
+          DEPENDS="$(
+            { printf '%s\n' "$LINK_DEPENDS" | tr ',' '\n'
+              printf '%s\n' $DLOPEN_DEPENDS
+            } | sed '/^$/d' | sort -u | paste -sd, -
+          )"
+          cat > "$DEB/DEBIAN/control" <<EOF
+          Package: $BIN
+          Version: $VERSION
+          Section: video
+          Priority: optional
+          Architecture: amd64
+          Maintainer: Coobyk <mail@coobyk.com>
+          Homepage: https://github.com/${GITHUB_REPOSITORY}
+          Depends: $DEPENDS
+          Description: GPUI frontend for gpu-screen-recorder
+           A Rust + GPUI frontend for the gpu-screen-recorder backend, keeping the
+           Qt frontend's pages, configuration format and behaviour.
+           .
+           The gpu-screen-recorder backend must be installed separately.
+          EOF
+          dpkg-deb --build --root-owner-group "$DEB" "${BIN}_${VERSION}_amd64.deb"
+
+          sha256sum "$STAGE.tar.gz" "${BIN}_${VERSION}_amd64.deb" > SHA256SUMS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64
+          path: |
+            gpu-screen-recorder-gpui-*.tar.gz
+            gpu-screen-recorder-gpui_*.deb
+            SHA256SUMS
+          if-no-files-found: error
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.pkg.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            TAG="${GITHUB_REF_NAME}"
+          else
+            TAG="v${VERSION}"
+          fi
+
+          cat > notes.md <<'EOF'
+          Linux (x86_64) build of the GPUI frontend.
+
+          Requires the `gpu-screen-recorder` backend, which is **not** bundled:
+          install it from your package manager or from Flathub
+          (`com.dec05eba.gpu_screen_recorder`).
+
+          - `*.tar.gz` — unpack and run `./install.sh`, or copy the binary and
+            the `.desktop`/icon files into place by hand.
+          - `*.deb` — `sudo apt install ./<file>.deb`.
+          - `SHA256SUMS` — checksums for the archives.
+          EOF
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" \
+              gpu-screen-recorder-gpui-*.tar.gz \
+              gpu-screen-recorder-gpui_*.deb \
+              SHA256SUMS --clobber
+          else
+            gh release create "$TAG" \
+              gpu-screen-recorder-gpui-*.tar.gz \
+              gpu-screen-recorder-gpui_*.deb \
+              SHA256SUMS \
+              --title "GPU Screen Recorder (GPUI) ${VERSION}" \
+              --notes-file notes.md
+          fi
