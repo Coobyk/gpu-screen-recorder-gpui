@@ -50,6 +50,13 @@ sudo apt install build-essential pkg-config libssl-dev \
 cargo build --release
 ```
 
+Building from source on Arch with `makepkg` needs `options=('!lto')`. makepkg's
+`lto` option is on by default and puts `-flto=auto` into `CFLAGS`; GCC then
+compiles the C shim inside `wayland-backend` as an LTO object, and rustc bundles
+it into the rlib without an archive-index entry, so the final link fails with
+`undefined symbol: wl_log_trampoline_to_rust_client`. Appending `-fno-lto` to
+`CFLAGS` works too. The AUR package already does this.
+
 ## Run
 
 ```sh
