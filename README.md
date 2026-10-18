@@ -65,6 +65,14 @@ it into the rlib without an archive-index entry, so the final link fails with
 
 ## Install
 
+On Arch, the package is in the AUR:
+
+```sh
+yay -S gpu-screen-recorder-gpui
+```
+
+Otherwise, from a built checkout:
+
 ```sh
 sudo install -Dm755 target/release/gpu-screen-recorder-gpui /usr/local/bin/gpu-screen-recorder-gpui
 sudo install -Dm644 com.coobyk.gpu_screen_recorder.desktop /usr/share/applications/
