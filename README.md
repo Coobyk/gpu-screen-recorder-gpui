@@ -68,7 +68,8 @@ it into the rlib without an archive-index entry, so the final link fails with
 On Arch, the package is in the AUR:
 
 ```sh
-yay -S gpu-screen-recorder-gpui
+yay -S gpu-screen-recorder-gpui      # builds from source
+yay -S gpu-screen-recorder-gpui-bin  # prebuilt binary, no Rust toolchain needed
 ```
 
 Otherwise, from a built checkout:
@@ -101,6 +102,49 @@ Pushing a `v*` tag runs `.github/workflows/release.yml`, which builds on
 The `gpu-screen-recorder` backend is **not** bundled; install it separately.
 The packages depend on the EGL/Vulkan/Wayland libraries the UI needs, but a
 working GPU driver (Mesa or the NVIDIA driver) must already be installed.
+
+### AUR
+
+The same tag also refreshes two AUR packages, built from `packaging/aur/`:
+
+| AUR package | PKGBUILD | Sources |
+| --- | --- | --- |
+| `gpu-screen-recorder-gpui` | `packaging/aur/gpu-screen-recorder-gpui/PKGBUILD` | the `vX.Y.Z` source tarball, compiled with `cargo` |
+| `gpu-screen-recorder-gpui-bin` | `packaging/aur/gpu-screen-recorder-gpui-bin/PKGBUILD` | tarball built on Arch in CI, attached to the release |
+
+`aur-build` runs in an `archlinux:base-devel` container (so the `-bin` binary is
+linked against Arch's libraries, not Ubuntu's), verifies the tag matches
+`Cargo.toml`, builds with `makepkg`, checks the binary has no unresolved
+libraries, and attaches `gpu-screen-recorder-gpui-<version>-x86_64-archlinux.tar.gz`
+plus the `.pkg.tar.zst` to the release. `aur-publish` then bumps `pkgver`/`pkgrel`,
+regenerates `.SRCINFO`, fills in real checksums and pushes both packages.
+
+The AUR jobs live in `release.yml` rather than a separate `release: published`
+workflow on purpose: the release is created here with `GITHUB_TOKEN`, and
+GitHub does not run workflows for events caused by that token.
+
+`pkgrel` is reset to `1` for a new version and incremented when the AUR already
+carries that version, so re-running the workflow (Actions → Release → Run
+workflow) republishes the current release instead of doing nothing. It refuses
+to push a version older than what the AUR already has.
+
+### Required repository secrets
+
+| Secret | Value |
+| --- | --- |
+| `AUR_SSH_PRIVATE_KEY` | private key whose public half is registered on your AUR account |
+| `AUR_USERNAME` | git commit author name |
+| `AUR_EMAIL` | git commit author email |
+
+```sh
+ssh-keygen -t ed25519 -C "aur ci" -f ~/.ssh/aur-gpu-screen-recorder-gpui
+# paste ~/.ssh/aur-gpu-screen-recorder-gpui.pub into https://aur.archlinux.org/account/
+gh secret set AUR_SSH_PRIVATE_KEY < ~/.ssh/aur-gpu-screen-recorder-gpui
+gh secret set AUR_USERNAME --body Coobyk
+gh secret set AUR_EMAIL --body you@example.com
+```
+
+The first successful run creates the `gpu-screen-recorder-gpui-bin` package.
 
 ## Configuration
 

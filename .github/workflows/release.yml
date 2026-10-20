@@ -193,3 +193,151 @@ jobs:
               --title "GPU Screen Recorder (GPUI) ${VERSION}" \
               --notes-file notes.md
           fi
+
+  # The AUR packages are built from the same tag on Arch itself, so the binary
+  # shipped in `gpu-screen-recorder-gpui-bin` is linked against Arch's libraries
+  # rather than Ubuntu's.
+  aur-build:
+    name: Build AUR packages (Arch)
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    container:
+      image: archlinux:base-devel
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      version: ${{ steps.meta.outputs.version }}
+      epoch: ${{ steps.meta.outputs.epoch }}
+    env:
+      SRC_PKG: gpu-screen-recorder-gpui
+    steps:
+      - name: Install build dependencies
+        run: |
+          pacman -Sy --noconfirm archlinux-keyring
+          pacman -Su --noconfirm --needed \
+            base-devel git openssh sudo rust pkgconf \
+            fontconfig freetype2 libx11 libxcb libxkbcommon libxkbcommon-x11 \
+            wayland libglvnd vulkan-icd-loader libxau libxdmcp \
+            pacman-contrib libarchive
+          useradd --create-home builder
+          echo 'builder ALL=(ALL) NOPASSWD: ALL' >/etc/sudoers.d/builder
+
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Resolve version
+        id: meta
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -o errexit -o pipefail -o nounset
+          version=$(sed -n 's/^version *= *"\(.*\)"/\1/p' Cargo.toml | head -n1)
+          test -n "$version"
+          if [ "$REF_TYPE" = tag ]; then tag=$REF_NAME; else tag="v$version"; fi
+          if [ "$tag" != "v$version" ]; then
+            echo "::error::tag $tag does not match Cargo.toml (v$version)"
+            exit 1
+          fi
+          {
+            echo "tag=$tag"
+            echo "version=$version"
+            # Captured while the checkout is still owned by root; the build
+            # user takes ownership of it in the next step.
+            echo "epoch=$(git log -1 --format=%ct "$tag" 2>/dev/null || git log -1 --format=%ct)"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: Build package with makepkg
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -o errexit -o pipefail -o nounset
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+          cd "$GITHUB_WORKSPACE/packaging/aur/$SRC_PKG"
+          sed -i "s/^pkgver=.*/pkgver=$VERSION/; s/^pkgrel=.*/pkgrel=1/" PKGBUILD
+          sudo -u builder -H makepkg --force --nodeps --noconfirm
+          ls -l ./*.pkg.tar.zst
+
+      - name: Assemble release artifacts
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          EPOCH: ${{ steps.meta.outputs.epoch }}
+        run: |
+          set -o errexit -o pipefail -o nounset
+          cd "$GITHUB_WORKSPACE"
+          pkg=$(find "packaging/aur/$SRC_PKG" -maxdepth 1 -name '*.pkg.tar.zst' ! -name '*-debug-*' -print -quit)
+          test -n "$pkg"
+          mkdir -p dist tree
+          cp "$pkg" dist/
+          bsdtar -xf "$pkg" -C tree --exclude .PKGINFO --exclude .BUILDINFO --exclude .MTREE
+          if ldd tree/usr/bin/gpu-screen-recorder-gpui | grep -q 'not found'; then
+            echo "::error::binary has unresolved shared library dependencies"
+            ldd tree/usr/bin/gpu-screen-recorder-gpui
+            exit 1
+          fi
+          # Deterministic tarball: re-running the workflow for the same tag
+          # yields the same checksum, so `-bin` does not churn.
+          tar --sort=name --mtime="@$EPOCH" --owner=0 --group=0 --numeric-owner \
+            -czf "dist/gpu-screen-recorder-gpui-$VERSION-x86_64-archlinux.tar.gz" -C tree .
+          cd dist
+          # Distinct name: the Ubuntu job owns `SHA256SUMS`.
+          sha256sum ./* >SHA256SUMS.arch
+          cat SHA256SUMS.arch
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: arch-packages
+          path: dist/*
+          if-no-files-found: error
+
+  aur-publish:
+    name: Publish AUR packages
+    needs: [linux, aur-build]
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ needs.aur-build.outputs.tag }}
+      VERSION: ${{ needs.aur-build.outputs.version }}
+      SRC_PKG: gpu-screen-recorder-gpui
+      BIN_PKG: gpu-screen-recorder-gpui-bin
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.aur-build.outputs.tag }}
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: arch-packages
+          path: dist
+
+      - name: Attach Arch packages to the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" dist/* --clobber
+
+      - name: Point source PKGBUILD at ${{ needs.aur-build.outputs.version }}
+        run: bash packaging/aur/bump-pkgver.sh "$SRC_PKG" "$VERSION" "packaging/aur/$SRC_PKG/PKGBUILD"
+
+      - name: Push ${{ env.SRC_PKG }}
+        uses: KSXGitHub/github-actions-deploy-aur@084b0d9b15415bf9cdb65d44dad1efe37a354050 # v4.2.0
+        with:
+          pkgname: gpu-screen-recorder-gpui
+          pkgbuild: ./packaging/aur/gpu-screen-recorder-gpui/PKGBUILD
+          updpkgsums: true
+          commit_username: ${{ secrets.AUR_USERNAME }}
+          commit_email: ${{ secrets.AUR_EMAIL }}
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: "Update to ${{ needs.aur-build.outputs.tag }}"
+
+      - name: Point -bin PKGBUILD at ${{ needs.aur-build.outputs.version }}
+        run: bash packaging/aur/bump-pkgver.sh "$BIN_PKG" "$VERSION" "packaging/aur/$BIN_PKG/PKGBUILD"
+
+      - name: Push ${{ env.BIN_PKG }}
+        uses: KSXGitHub/github-actions-deploy-aur@084b0d9b15415bf9cdb65d44dad1efe37a354050 # v4.2.0
+        with:
+          pkgname: gpu-screen-recorder-gpui-bin
+          pkgbuild: ./packaging/aur/gpu-screen-recorder-gpui-bin/PKGBUILD
+          updpkgsums: true
+          commit_username: ${{ secrets.AUR_USERNAME }}
+          commit_email: ${{ secrets.AUR_EMAIL }}
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: "Update to ${{ needs.aur-build.outputs.tag }}"
