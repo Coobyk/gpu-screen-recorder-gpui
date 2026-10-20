@@ -300,9 +300,10 @@ jobs:
       SRC_PKG: gpu-screen-recorder-gpui
       BIN_PKG: gpu-screen-recorder-gpui-bin
     steps:
+      # No `ref:` on purpose: the packaging files must come from the branch or
+      # tag that triggered the run. Checking out the release tag would miss
+      # them whenever the tag predates the packaging change.
       - uses: actions/checkout@v7
-        with:
-          ref: ${{ needs.aur-build.outputs.tag }}
 
       - uses: actions/download-artifact@v8
         with:
