@@ -1,7 +1,9 @@
 name: Release
 
-# Builds on every push/PR (so the build stays green), and publishes a GitHub
-# Release when a `v*` tag is pushed or the workflow is run by hand.
+# Builds on every push/PR (so the build stays green). Every push to `main`
+# bumps the patch version, commits it, tags it and publishes a GitHub Release
+# plus both AUR packages; a `v*` tag push or a manual run releases the version
+# already in Cargo.toml instead.
 on:
   push:
     branches: [main]
@@ -13,17 +15,119 @@ on:
 permissions:
   contents: write
 
+# A push to main starts a bump + release run; a second push that lands while
+# that run is still going must not race it for the version bump.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   CARGO_TERM_COLOR: always
   BIN: gpu-screen-recorder-gpui
   DESKTOP: com.coobyk.gpu_screen_recorder.desktop
 
 jobs:
+  # Every push to main gets its own version: the patch number is bumped and
+  # committed here, and the rest of the pipeline releases that commit. The tag
+  # itself is created only once the Linux build has succeeded (see `linux`), so
+  # a failed build never leaves a tag with no release behind.
+  bump:
+    name: Bump version
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+      sha: ${{ steps.meta.outputs.sha }}
+      release: ${{ steps.meta.outputs.release }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Resolve version
+        id: meta
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -o errexit -o pipefail -o nounset
+
+          release=false
+          if [ "$EVENT" = workflow_dispatch ] || [ "$REF_TYPE" = tag ]; then
+            release=true
+          fi
+
+          if [ "$EVENT" = push ] && [ "$REF" = refs/heads/main ]; then
+            # `concurrency` serialises runs for main, but a previous run may
+            # still have advanced the branch after this run's commit. Rebase
+            # onto it so the bump push cannot be rejected as non-fast-forward.
+            git pull --rebase origin main
+            case "$(git log -1 --format=%s)" in
+              "chore(release): "*)
+                # A release commit that triggered a run anyway (e.g. it was
+                # pushed with a token that does start workflows): leave it
+                # alone instead of bumping and releasing it again.
+                ;;
+              *)
+                version=$(sed -n 's/^version *= *"\(.*\)"/\1/p' Cargo.toml | head -n1)
+                test -n "$version"
+                major=${version%%.*}
+                rest=${version#*.}
+                minor=${rest%%.*}
+                patch=${rest#*.}
+                patch=${patch%%[^0-9]*}
+                next="$major.$minor.$((patch + 1))"
+
+                sed -i "s/^version = \"$version\"/version = \"$next\"/" Cargo.toml
+                # The lockfile records the crate's own version too; without
+                # this, the later `cargo build --locked` refuses to run.
+                cargo update -p gpu-screen-recorder-gpui
+
+                git config user.name "github-actions[bot]"
+                git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+                git add Cargo.toml Cargo.lock
+                git commit -m "chore(release): v$next"
+                git push origin HEAD:main
+                release=true
+                ;;
+            esac
+          fi
+
+          version=$(sed -n 's/^version *= *"\(.*\)"/\1/p' Cargo.toml | head -n1)
+          test -n "$version"
+          if [ "$REF_TYPE" = tag ]; then
+            tag=$REF_NAME
+          else
+            tag="v$version"
+          fi
+          if [ "$tag" != "v$version" ]; then
+            echo "::error::tag $tag does not match Cargo.toml (v$version)"
+            exit 1
+          fi
+
+          {
+            echo "version=$version"
+            echo "tag=$tag"
+            echo "sha=$(git rev-parse HEAD)"
+            echo "release=$release"
+          } >>"$GITHUB_OUTPUT"
+
   linux:
     name: Linux x86_64
+    needs: bump
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.bump.outputs.sha }}
 
       - name: Check the tag matches the crate version
         if: startsWith(github.ref, 'refs/tags/v')
@@ -56,11 +160,9 @@ jobs:
         run: cargo build --release --locked
 
       - name: Package
-        id: pkg
         run: |
           set -euo pipefail
           VERSION="$(sed -n 's/^version *= *"\(.*\)"/\1/p' Cargo.toml | head -n1)"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
           # --- portable tarball -------------------------------------------------
           STAGE="${BIN}-${VERSION}-x86_64-linux"
@@ -155,16 +257,22 @@ jobs:
           if-no-files-found: error
 
       - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+        if: needs.bump.outputs.release == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.pkg.outputs.version }}
+          VERSION: ${{ needs.bump.outputs.version }}
+          TAG: ${{ needs.bump.outputs.tag }}
         run: |
           set -euo pipefail
-          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            TAG="${GITHUB_REF_NAME}"
-          else
-            TAG="v${VERSION}"
+
+          # The bump job only commits the new version. Creating the tag here,
+          # after a successful build, keeps a broken build from leaving a tag
+          # without a release. Tag pushes already carry their tag.
+          if [ "${GITHUB_EVENT_NAME}" = push ] && [ "${GITHUB_REF}" = refs/heads/main ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "$TAG" -m "$TAG"
+            git push origin "$TAG"
           fi
 
           cat > notes.md <<'EOF'
@@ -199,16 +307,15 @@ jobs:
   # rather than Ubuntu's.
   aur-build:
     name: Build AUR packages (Arch)
+    needs: [bump, linux]
+    if: needs.bump.outputs.release == 'true'
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     container:
       image: archlinux:base-devel
-    outputs:
-      tag: ${{ steps.meta.outputs.tag }}
-      version: ${{ steps.meta.outputs.version }}
-      epoch: ${{ steps.meta.outputs.epoch }}
     env:
       SRC_PKG: gpu-screen-recorder-gpui
+      VERSION: ${{ needs.bump.outputs.version }}
+      TAG: ${{ needs.bump.outputs.tag }}
     steps:
       - name: Install build dependencies
         run: |
@@ -223,33 +330,18 @@ jobs:
 
       - uses: actions/checkout@v7
         with:
+          ref: ${{ needs.bump.outputs.sha }}
           fetch-depth: 0
 
-      - name: Resolve version
+      - name: Resolve tag commit time
         id: meta
-        env:
-          REF_TYPE: ${{ github.ref_type }}
-          REF_NAME: ${{ github.ref_name }}
         run: |
           set -o errexit -o pipefail -o nounset
-          version=$(sed -n 's/^version *= *"\(.*\)"/\1/p' Cargo.toml | head -n1)
-          test -n "$version"
-          if [ "$REF_TYPE" = tag ]; then tag=$REF_NAME; else tag="v$version"; fi
-          if [ "$tag" != "v$version" ]; then
-            echo "::error::tag $tag does not match Cargo.toml (v$version)"
-            exit 1
-          fi
-          {
-            echo "tag=$tag"
-            echo "version=$version"
-            # Captured while the checkout is still owned by root; the build
-            # user takes ownership of it in the next step.
-            echo "epoch=$(git log -1 --format=%ct "$tag" 2>/dev/null || git log -1 --format=%ct)"
-          } >>"$GITHUB_OUTPUT"
+          # Captured while the checkout is still owned by root; the build user
+          # takes ownership of it in the next step.
+          echo "epoch=$(git log -1 --format=%ct "$TAG")" >>"$GITHUB_OUTPUT"
 
       - name: Build package with makepkg
-        env:
-          VERSION: ${{ steps.meta.outputs.version }}
         run: |
           set -o errexit -o pipefail -o nounset
           chown -R builder:builder "$GITHUB_WORKSPACE"
@@ -260,7 +352,6 @@ jobs:
 
       - name: Assemble release artifacts
         env:
-          VERSION: ${{ steps.meta.outputs.version }}
           EPOCH: ${{ steps.meta.outputs.epoch }}
         run: |
           set -o errexit -o pipefail -o nounset
@@ -292,18 +383,20 @@ jobs:
 
   aur-publish:
     name: Publish AUR packages
-    needs: [linux, aur-build]
+    needs: [bump, linux, aur-build]
+    if: needs.bump.outputs.release == 'true'
     runs-on: ubuntu-latest
     env:
-      TAG: ${{ needs.aur-build.outputs.tag }}
-      VERSION: ${{ needs.aur-build.outputs.version }}
+      TAG: ${{ needs.bump.outputs.tag }}
+      VERSION: ${{ needs.bump.outputs.version }}
       SRC_PKG: gpu-screen-recorder-gpui
       BIN_PKG: gpu-screen-recorder-gpui-bin
     steps:
-      # No `ref:` on purpose: the packaging files must come from the branch or
-      # tag that triggered the run. Checking out the release tag would miss
-      # them whenever the tag predates the packaging change.
+      # Pin the exact commit that was built (the version-bump commit on main,
+      # or the tag commit): the packaging files must match the release.
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.bump.outputs.sha }}
 
       - uses: actions/download-artifact@v8
         with:
@@ -315,7 +408,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "$TAG" dist/* --clobber
 
-      - name: Point source PKGBUILD at ${{ needs.aur-build.outputs.version }}
+      - name: Point source PKGBUILD at ${{ needs.bump.outputs.version }}
         run: bash packaging/aur/bump-pkgver.sh "$SRC_PKG" "$VERSION" "packaging/aur/$SRC_PKG/PKGBUILD"
 
       - name: Push ${{ env.SRC_PKG }}
@@ -327,9 +420,9 @@ jobs:
           commit_username: ${{ secrets.AUR_USERNAME }}
           commit_email: ${{ secrets.AUR_EMAIL }}
           ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
-          commit_message: "Update to ${{ needs.aur-build.outputs.tag }}"
+          commit_message: "Update to ${{ needs.bump.outputs.tag }}"
 
-      - name: Point -bin PKGBUILD at ${{ needs.aur-build.outputs.version }}
+      - name: Point -bin PKGBUILD at ${{ needs.bump.outputs.version }}
         run: bash packaging/aur/bump-pkgver.sh "$BIN_PKG" "$VERSION" "packaging/aur/$BIN_PKG/PKGBUILD"
 
       - name: Push ${{ env.BIN_PKG }}
@@ -341,4 +434,4 @@ jobs:
           commit_username: ${{ secrets.AUR_USERNAME }}
           commit_email: ${{ secrets.AUR_EMAIL }}
           ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
-          commit_message: "Update to ${{ needs.aur-build.outputs.tag }}"
+          commit_message: "Update to ${{ needs.bump.outputs.tag }}"

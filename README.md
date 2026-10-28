@@ -91,8 +91,18 @@ name, which is what the compositor and the portal expect.
 
 ## Releases
 
-Pushing a `v*` tag runs `.github/workflows/release.yml`, which builds on
-`ubuntu-24.04` and publishes:
+Every push to `main` is released automatically. The `bump` job increments the
+patch version in `Cargo.toml`, commits it as `chore(release): vX.Y.Z`, and the
+rest of the run builds, tags `vX.Y.Z` and publishes the artifacts below plus the
+two AUR packages. The tag is created only after the Linux build succeeds, so a
+failed build leaves no tag behind.
+
+Pushing a `v*` tag (or running the workflow by hand from the Actions tab)
+releases the version already in `Cargo.toml` instead, without bumping it. A tag
+push must match `Cargo.toml` (`vX.Y.Z`), and re-running a release republishes
+the same version with a bumped AUR `pkgrel`.
+
+Each release consists of:
 
 - `gpu-screen-recorder-gpui-<version>-x86_64-linux.tar.gz` — the binary with
   the `.desktop` and icon files; run `./install.sh` (honours `PREFIX`).
@@ -105,23 +115,25 @@ working GPU driver (Mesa or the NVIDIA driver) must already be installed.
 
 ### AUR
 
-The same tag also refreshes two AUR packages, built from `packaging/aur/`:
+The same run also refreshes two AUR packages, built from `packaging/aur/`:
 
 | AUR package | PKGBUILD | Sources |
 | --- | --- | --- |
 | `gpu-screen-recorder-gpui` | `packaging/aur/gpu-screen-recorder-gpui/PKGBUILD` | the `vX.Y.Z` source tarball, compiled with `cargo` |
 | `gpu-screen-recorder-gpui-bin` | `packaging/aur/gpu-screen-recorder-gpui-bin/PKGBUILD` | tarball built on Arch in CI, attached to the release |
 
-`aur-build` runs in an `archlinux:base-devel` container (so the `-bin` binary is
-linked against Arch's libraries, not Ubuntu's), verifies the tag matches
-`Cargo.toml`, builds with `makepkg`, checks the binary has no unresolved
-libraries, and attaches `gpu-screen-recorder-gpui-<version>-x86_64-archlinux.tar.gz`
-plus the `.pkg.tar.zst` to the release. `aur-publish` then bumps `pkgver`/`pkgrel`,
+`aur-build` runs in an `archlinux:base-devel` container on the exact commit
+that was released (so the `-bin` binary is linked against Arch's libraries, not
+Ubuntu's), builds with `makepkg`, checks the binary has no unresolved libraries,
+and attaches `gpu-screen-recorder-gpui-<version>-x86_64-archlinux.tar.gz` plus
+the `.pkg.tar.zst` to the release. `aur-publish` then bumps `pkgver`/`pkgrel`,
 regenerates `.SRCINFO`, fills in real checksums and pushes both packages.
 
 The AUR jobs live in `release.yml` rather than a separate `release: published`
 workflow on purpose: the release is created here with `GITHUB_TOKEN`, and
-GitHub does not run workflows for events caused by that token.
+GitHub does not run workflows for events caused by that token. The same is what
+keeps the automatic `chore(release): vX.Y.Z` commit from starting another run,
+so the bump cannot recurse.
 
 `pkgrel` is reset to `1` for a new version and incremented when the AUR already
 carries that version, so re-running the workflow (Actions → Release → Run
