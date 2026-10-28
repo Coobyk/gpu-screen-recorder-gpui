@@ -1,6 +1,6 @@
 [package]
 name = "gpu-screen-recorder-gpui"
-version = "5.7.10"
+version = "5.7.11"
 edition = "2024"
 description = "A GPUI frontend for gpu-screen-recorder"
 license = "GPL-3.0-only"
