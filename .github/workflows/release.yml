@@ -347,6 +347,10 @@ jobs:
           chown -R builder:builder "$GITHUB_WORKSPACE"
           cd "$GITHUB_WORKSPACE/packaging/aur/$SRC_PKG"
           sed -i "s/^pkgver=.*/pkgver=$VERSION/; s/^pkgrel=.*/pkgrel=1/" PKGBUILD
+          # The tag tarball only exists once the release has been tagged, so
+          # its checksum cannot be committed ahead of time on a bump-per-push
+          # release. Compute it here, before makepkg validates the sources.
+          sudo -u builder -H updpkgsums
           sudo -u builder -H makepkg --force --nodeps --noconfirm
           ls -l ./*.pkg.tar.zst
 
