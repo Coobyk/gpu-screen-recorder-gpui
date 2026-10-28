@@ -97,12 +97,12 @@ fn main() {
     let startup_error = validate_startup(&gsr_info, gsr_status, flatpak);
 
     gpui_platform::application().run(move |cx: &mut App| {
-        // The window close is hidden-to-tray rather than a quit, so the app
-        // must be able to end explicitly (the tray's "Exit" item, the
-        // termination signals, or the error dialog). `LastWindowClosed` is the
-        // safety net: if a close ever gets through without the hide handler
-        // running (the callback is not reliable on every backend), the process
-        // exits instead of lingering with no window and no way to reach it.
+        // The window close is routed through the pump's graceful shutdown, so
+        // the app must also be able to end explicitly (the tray's "Exit" item,
+        // the termination signals, or the error dialog). `LastWindowClosed` is
+        // the safety net: if a close ever gets through without the pump running
+        // (the callback is not reliable on every backend), the process exits
+        // instead of lingering with no window and no way to reach it.
         cx.set_quit_mode(QuitMode::LastWindowClosed);
 
         // Backspace, arrows, clipboard and select-all inside the text fields.
@@ -117,9 +117,6 @@ fn main() {
 
         let events = EventChannel::new();
         let tray_state = Arc::new(Mutex::new(TrayState::default()));
-        // Whether an icon can actually be shown decides if closing the window
-        // hides (recoverable through the tray) or quits.
-        let tray_available = tray::host_available();
         let tray_handle = tray::spawn(tray_state.clone(), events.sender.clone());
         let notifier = notify::spawn();
 
@@ -157,24 +154,24 @@ fn main() {
                     ..Default::default()
                 },
                 |window, cx| {
-                    let close_app = app.clone();
-                    window.on_window_should_close(cx, move |window, cx| {
-                        if tray_available {
-                            // The "X" hides to tray, exactly like the Qt
-                            // frontend's `closeEvent`.
-                            window.minimize_window();
-                            close_app.update(cx, |app, cx| app.on_window_hidden(cx));
-                        } else {
-                            // No tray host: hiding would strand the process
-                            // with no way to bring it back, so quit instead.
-                            //
-                            // Deferred to the pump rather than running the
-                            // shutdown here: `cx.quit()` does not take effect
-                            // when called from inside the platform's close
-                            // callback, and the window must survive until the
-                            // pump (which is bound to it) has run.
-                            TERMINATE_REQUESTED.store(true, Ordering::SeqCst);
-                        }
+                    // A close request from the compositor (the window's "X", or
+                    // a desktop keybinding such as Hyprland's SUPER+W) runs the
+                    // same orderly shutdown as the tray's "Exit": the recorder
+                    // is stopped so the file is finalized, the config is written
+                    // and the app quits.
+                    //
+                    // The window is not hidden instead because GPUI has no
+                    // `hide()` on Linux and its `minimize_window()` is a no-op
+                    // under compositors that ignore `xdg_toplevel.set_minimized`
+                    // (Hyprland, sway), which left the window on screen and the
+                    // process running with no obvious way out.
+                    //
+                    // Deferred to the pump rather than running the shutdown
+                    // here: `cx.quit()` does not take effect when called from
+                    // inside the platform's close callback, and the window must
+                    // survive until the pump (which is bound to it) has run.
+                    window.on_window_should_close(cx, |_window, _cx| {
+                        TERMINATE_REQUESTED.store(true, Ordering::SeqCst);
                         false
                     });
 

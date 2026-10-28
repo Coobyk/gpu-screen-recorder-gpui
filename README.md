@@ -199,11 +199,14 @@ points are deliberately different:
 - **Hide to tray.** The Qt frontend hid the window. This version minimizes
   the window (`Window::minimize_window`), which is the closest GPUI
   equivalent on Linux; the window is restored with `activate_window`.
-- **Closing the window without a tray.** Hiding to tray is only useful when
-  a StatusNotifierItem host is actually running, so the app checks for one
-  (`org.kde.StatusNotifierWatcher`). If none is present — a bare session, or
-  `cargo run` from a terminal — closing the window quits instead of hiding,
-  so the process can never be left running with no way to reach it.
+  Compositors that ignore client-side minimize requests (Hyprland, sway)
+  leave the window where it is, so use the tray menu's "Exit" instead.
+- **Closing the window.** The Qt frontend hid the window on close; this
+  version quits through the same orderly shutdown as the tray's "Exit"
+  instead — the recorder is stopped so the file is finalized, the config is
+  written, and then the process exits. That makes a compositor close request
+  (the window's "X", or a desktop keybinding such as Hyprland's `SUPER+W`)
+  actually end the app rather than leave it running.
 - **Termination signals.** `SIGINT`/`SIGTERM`/`SIGHUP` (Ctrl+C, `kill`, a
   closing terminal) trigger the same orderly shutdown as the tray's "Exit":
   the recorder is stopped so the file is finalized, the config is written,

@@ -655,12 +655,6 @@ impl GsrApp {
         self.sync_tray(cx);
     }
 
-    /// `closeEvent` in the Qt frontend: the window is always hidden, never closed.
-    pub fn on_window_hidden(&mut self, cx: &mut Context<Self>) {
-        self.window_hidden = true;
-        self.sync_tray(cx);
-    }
-
     pub fn handle_event(
         &mut self,
         event: AppEvent,
